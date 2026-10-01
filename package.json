@@ -1,0 +1,32 @@
+{
+  "name": "pi-telegram-bridge",
+  "version": "1.0.0",
+  "description": "Talk to your pi agent from Telegram and get a Telegram ping whenever it needs you. Two-way chat, multiple chats per session, multiple sessions, off by default.",
+  "keywords": [
+    "pi-package",
+    "telegram",
+    "notifications",
+    "remote",
+    "agent",
+    "tmux"
+  ],
+  "license": "MIT",
+  "author": "NicholasMGreen",
+  "homepage": "https://github.com/NicholasMGreen/pi-telegram-bridge#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NicholasMGreen/pi-telegram-bridge"
+  },
+  "bugs": {
+    "url": "https://github.com/NicholasMGreen/pi-telegram-bridge/issues"
+  },
+  "type": "module",
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/telegram/index.ts"
+    ]
+  }
+}
