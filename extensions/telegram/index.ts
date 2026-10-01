@@ -56,6 +56,18 @@ const DANGEROUS = [
 const baseDir = dirname(fileURLToPath(import.meta.url));
 const SKILL_PATH = join(baseDir, "skills", "telegram-messaging", "SKILL.md");
 
+// Telegram bridge control commands (handled locally, never sent to pi).
+const BRIDGE_COMMANDS = new Set(["pair", "start", "link", "allow", "approve", "deny", "reject", "unlink", "help"]);
+
+// pi built-in slash commands (core; not dispatched by sendUserMessage).
+const BUILTIN_COMMANDS = new Set([
+	"settings", "model", "tree", "thinking", "scoped-models", "export", "import", "share", "bug",
+	"copy", "name", "session", "changelog", "hotkeys", "fork", "clone", "trust", "login", "logout",
+	"new", "compact", "resume", "reload", "quit",
+]);
+
+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
 let skillBodyCache: string | undefined;
 
 /** Load the messaging skill body (frontmatter stripped), cached. */
@@ -134,6 +146,20 @@ export default function (pi: ExtensionAPI) {
 			// Busy (streaming): queue as a follow-up instead of interrupting.
 			try {
 				pi.sendUserMessage(text, { deliverAs: "followUp" });
+			} catch {
+				/* ignore */
+			}
+		}
+	}
+
+	// Dispatch a slash command through pi. expandPromptTemplates makes pi run
+	// extension commands, /skill:name, and /template just as if typed in the editor.
+	function injectCommand(text: string): void {
+		try {
+			pi.sendUserMessage(text, { expandPromptTemplates: true });
+		} catch {
+			try {
+				pi.sendUserMessage(text, { deliverAs: "followUp", expandPromptTemplates: true });
 			} catch {
 				/* ignore */
 			}
@@ -249,13 +275,10 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		// Linked chat with normal text -> inject into the pi session.
+		// Linked chat: slash commands route to pi; plain text becomes your message.
 		if (text) {
 			if (text.startsWith("/")) {
-				// Unknown slash command from a linked chat: give quick help, don't inject.
-				if (/^\/help(?:@\w+)?$/i.test(text)) {
-					await safeSend(token, chatId, `Type any message to talk to the agent.\n/approve <id>, /deny <id>, /unlink`);
-				}
+				await handleSlashCommand(text, chatId, c);
 				return;
 			}
 			injectUser(text);
@@ -268,6 +291,99 @@ export default function (pi: ExtensionAPI) {
 		} catch (err: any) {
 			lastError = String(err?.message || err);
 		}
+	}
+
+	// ---- slash-command routing (Telegram -> pi) ----
+	function bridgeHelp(): string {
+		return (
+			"Telegram bridge commands:\n" +
+			"  /pair <code>   link this chat to the session\n" +
+			"  /unlink        remove this chat\n" +
+			"  /allow <id>    approve a pending request\n" +
+			"  /deny <id>     deny a pending request\n\n" +
+			"Any other /command is sent to pi and runs as if you typed it\n" +
+			"(e.g. /compact, /session, /skill:name, your extension commands).\n" +
+			"Plain text is sent as your message to the agent."
+		);
+	}
+
+	// pi built-in commands. The safe non-interactive ones run directly; the rest
+	// open terminal pickers, so we explain instead of silently dropping them.
+	async function handleBuiltin(name: string, args: string): Promise<string> {
+		const ctx = sessionCtx;
+		try {
+			switch (name) {
+				case "compact":
+					ctx?.compact?.({ customInstructions: args || undefined });
+					return args ? `⏳ Compacting with instructions: ${args}` : "⏳ Compacting context…";
+				case "name":
+					if (args) {
+						pi.setSessionName(args);
+						return `Session name set to "${args}".`;
+					}
+					return `Session name: ${pi.getSessionName() || "(not set)"}`;
+				case "thinking":
+					if (args) {
+						const lvl = args.toLowerCase();
+						if (!THINKING_LEVELS.includes(lvl)) {
+							return `Unknown thinking level "${args}". Use one of: ${THINKING_LEVELS.join(", ")}`;
+						}
+						pi.setThinkingLevel(lvl as any);
+						return `Thinking level set to ${lvl}.`;
+					}
+					return `Thinking level: ${pi.getThinkingLevel()}`;
+				case "session": {
+					const usage = ctx?.getContextUsage?.();
+					const lines = [
+						"Session info",
+						`name:    ${pi.getSessionName() || "(not set)"}`,
+						`model:   ${ctx?.model?.id || "unknown"}`,
+						`cwd:     ${ctx?.cwd || "unknown"}`,
+						`status:  ${ctx?.isIdle?.() ? "idle" : "working"}`,
+					];
+					if (usage) lines.push(`context: ${usage.tokens ?? "?"} tokens (${usage.percent ?? "?"}%)`);
+					return lines.join("\n");
+				}
+				case "quit":
+					ctx?.shutdown?.();
+					return "Shutting down pi. This Telegram link will stop with it.";
+				case "model":
+					return args
+						? "Setting a model over Telegram isn't supported yet. Run /model in the terminal."
+						: "/model opens a model picker in the terminal. Run it there.";
+				case "new":
+				case "resume":
+				case "fork":
+				case "clone":
+				case "tree":
+					return `/${name} switches the pi session. Telegram stays bound to the current session, so the next session won't be linked here. Run it in the terminal.`;
+				default:
+					return `/${name} is a terminal UI command. Run it in the pi terminal.`;
+			}
+		} catch (e: any) {
+			return `Couldn't run /${name}: ${String(e?.message || e)}`;
+		}
+	}
+
+	// Route a slash command from a linked chat to pi.
+	async function handleSlashCommand(text: string, chatId: number, c: TgConfig): Promise<void> {
+		const m = text.match(/^\/([A-Za-z0-9_-]+)(?:@\w+)?(?:\s+([\s\S]*))?$/);
+		const name = (m?.[1] || "").toLowerCase();
+		const args = (m?.[2] || "").trim();
+		const token = c.botToken!;
+
+		if (BRIDGE_COMMANDS.has(name)) {
+			await safeSend(token, chatId, bridgeHelp());
+			return;
+		}
+		if (BUILTIN_COMMANDS.has(name)) {
+			await safeSend(token, chatId, await handleBuiltin(name, args));
+			return;
+		}
+
+		// Extension / skill / prompt-template command: dispatch it to pi.
+		await safeSend(token, chatId, `▶ ${text.split("\n")[0]}`);
+		injectCommand(text);
 	}
 
 	// ---- optional Telegram approval gate for dangerous commands ----

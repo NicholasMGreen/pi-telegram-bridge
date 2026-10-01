@@ -12,6 +12,8 @@ a risky command, it texts you a recap. Reply in Telegram to keep it going.
 - 📱 **Chat-ready replies** — once linked, the agent writes for a phone: concise,
   plain text, bullet points, no markdown. Driven by a built-in
   `telegram-messaging` skill that is injected into context and enforced.
+- ⚡ **Slash commands work** — send any `/command` from Telegram and it runs in pi:
+  extension commands, `/skill:name`, `/compact`, `/session`, and more.
 - 👥 **Multi-chat** — link several Telegram accounts/devices to one session.
 - 🖥️ **Multi-session** — run many pi sessions in tmux, each with its own bot and
   its own pings (labelled so you know which pane needs you).
@@ -128,11 +130,28 @@ Each pane pings you separately. Label them so you know who's who:
 | You send | What happens |
 |---|---|
 | any text | Sent to the pi session as your message |
+| `/command ...` | Runs the pi slash command (see below) |
 | `/pair <code>` | Link another chat to this session |
 | `/allow <id>` | Approve a pending dangerous-command request |
 | `/deny <id>` | Deny a pending request |
 | `/unlink` | Remove this chat from the session |
-| `/help` | Quick reminder |
+| `/help` | Bridge help |
+
+## Slash commands from Telegram
+
+Send any `/command` in the Telegram chat and it runs in pi, just like typing it in
+the terminal:
+
+- **Extension commands, `/skill:name`, prompt templates** — dispatched and run
+  as-is (e.g. `/handoff`, `/skill:pdf-tools`, your custom commands).
+- **Safe built-ins** — `/compact [instructions]`, `/name`, `/thinking`, `/session`,
+  and `/quit` run directly and reply with the result.
+- **Bridge commands** — `/pair`, `/unlink`, `/allow`, `/deny`, `/help` control the
+  bridge itself and never reach pi.
+- **Terminal-only commands** — interactive pickers like `/model`, `/settings`,
+  `/login`, and session switches like `/new`, `/resume`, `/fork` reply with a short
+  note that they need the terminal (session switches would also detach Telegram),
+  so nothing is ever silently dropped.
 
 ---
 
