@@ -35,8 +35,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import * as cfgStore from "./config.ts";
 import type { TgConfig } from "./config.ts";
-import { getUpdates, sendMessage, tgCall, chatTitle } from "./telegram.ts";
-import type { TgUpdate, TgMessage } from "./telegram.ts";
+import { getUpdates, sendMessage, tgCall, chatTitle, answerCallbackQuery, editMessageText } from "./telegram.ts";
+import type { TgUpdate, TgMessage, TgCallbackQuery, TgInlineKeyboard } from "./telegram.ts";
 import { formatRecap } from "./recap.ts";
 import * as fs from "node:fs";
 import { dirname, join } from "node:path";
@@ -200,6 +200,10 @@ export default function (pi: ExtensionAPI) {
 
 	// ---- inbound message handling ----
 	async function handleUpdate(u: TgUpdate): Promise<void> {
+		if (u.callback_query) {
+			await handleCallback(u.callback_query);
+			return;
+		}
 		const msg: TgMessage | undefined = u.message || u.edited_message;
 		if (!msg) return;
 		const c = ensure(sessionCtx);
@@ -322,16 +326,6 @@ export default function (pi: ExtensionAPI) {
 						return `Session name set to "${args}".`;
 					}
 					return `Session name: ${pi.getSessionName() || "(not set)"}`;
-				case "thinking":
-					if (args) {
-						const lvl = args.toLowerCase();
-						if (!THINKING_LEVELS.includes(lvl)) {
-							return `Unknown thinking level "${args}". Use one of: ${THINKING_LEVELS.join(", ")}`;
-						}
-						pi.setThinkingLevel(lvl as any);
-						return `Thinking level set to ${lvl}.`;
-					}
-					return `Thinking level: ${pi.getThinkingLevel()}`;
 				case "session": {
 					const usage = ctx?.getContextUsage?.();
 					const lines = [
@@ -347,10 +341,6 @@ export default function (pi: ExtensionAPI) {
 				case "quit":
 					ctx?.shutdown?.();
 					return "Shutting down pi. This Telegram link will stop with it.";
-				case "model":
-					return args
-						? "Setting a model over Telegram isn't supported yet. Run /model in the terminal."
-						: "/model opens a model picker in the terminal. Run it there.";
 				case "new":
 				case "resume":
 				case "fork":
@@ -377,6 +367,14 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		if (BUILTIN_COMMANDS.has(name)) {
+			if (name === "model") {
+				await handleModelCommand(c, chatId, args);
+				return;
+			}
+			if (name === "thinking") {
+				await handleThinkingCommand(c, chatId, args);
+				return;
+			}
 			await safeSend(token, chatId, await handleBuiltin(name, args));
 			return;
 		}
@@ -384,6 +382,209 @@ export default function (pi: ExtensionAPI) {
 		// Extension / skill / prompt-template command: dispatch it to pi.
 		await safeSend(token, chatId, `▶ ${text.split("\n")[0]}`);
 		injectCommand(text);
+	}
+
+	// ---- remote pickers (Telegram inline keyboards) ----
+	const pickers = new Map<string, { models: any[]; page: number; pageSize: number }>();
+	let pickerSeq = 0;
+
+	function modelLabel(m: any): string {
+		return String(m?.name || m?.id || "model").slice(0, 40);
+	}
+
+	function chunkRows<T>(items: T[], perRow: number): T[][] {
+		const rows: T[][] = [];
+		for (let i = 0; i < items.length; i += perRow) rows.push(items.slice(i, i + perRow));
+		return rows;
+	}
+
+	function listModels(query: string): any[] {
+		const ctx = sessionCtx;
+		let models: any[] = [];
+		const scoped = ctx?.scopedModels;
+		if (scoped && scoped.length) {
+			models = scoped.map((s: any) => s.model).filter(Boolean);
+		} else {
+			const reg: any = ctx?.modelRegistry;
+			try {
+				if (reg?.getAvailable) models = [...reg.getAvailable()];
+			} catch {
+				/* ignore */
+			}
+			if (!models.length) {
+				try {
+					if (reg?.getAll) models = [...reg.getAll()];
+				} catch {
+					/* ignore */
+				}
+			}
+		}
+		if (query) {
+			const q = query.toLowerCase();
+			models = models.filter(
+				(m: any) =>
+					String(m?.id || "").toLowerCase().includes(q) ||
+					String(m?.name || "").toLowerCase().includes(q) ||
+					String(m?.provider || "").toLowerCase().includes(q),
+			);
+		}
+		models.sort((a: any, b: any) => `${a?.provider}/${a?.id}`.localeCompare(`${b?.provider}/${b?.id}`));
+		return models;
+	}
+
+	function tryFindModel(spec: string): any | undefined {
+		const i = spec.indexOf("/");
+		if (i < 0) return undefined;
+		try {
+			return sessionCtx?.modelRegistry?.find?.(spec.slice(0, i), spec.slice(i + 1));
+		} catch {
+			return undefined;
+		}
+	}
+
+	function renderModelPage(pid: string, models: any[], page: number, pageSize: number) {
+		const start = page * pageSize;
+		const slice = models.slice(start, start + pageSize);
+		const rows: any[][] = slice.map((m: any, idx: number) => [
+			{ text: modelLabel(m), callback_data: `pick:${pid}:${start + idx}` },
+		]);
+		const nav: any[] = [];
+		const pages = Math.max(1, Math.ceil(models.length / pageSize));
+		if (page > 0) nav.push({ text: "◂ Prev", callback_data: `pg:${pid}:${page - 1}` });
+		if (page + 1 < pages) nav.push({ text: "Next ▸", callback_data: `pg:${pid}:${page + 1}` });
+		if (nav.length) rows.push(nav);
+		return { text: `Select a model — page ${page + 1}/${pages} (${models.length} available):`, keyboard: rows };
+	}
+
+	async function showModelPicker(chatId: number, c: TgConfig, query: string): Promise<void> {
+		const models = listModels(query);
+		if (models.length === 0) {
+			await safeSend(c.botToken!, chatId, query ? `No models match "${query}".` : "No models available.");
+			return;
+		}
+		const pid = `m${++pickerSeq}`;
+		const pageSize = 8;
+		pickers.set(pid, { models, page: 0, pageSize });
+		const { text, keyboard } = renderModelPage(pid, models, 0, pageSize);
+		await sendMessage(c.botToken!, chatId, text, { inline_keyboard: keyboard });
+	}
+
+	async function showThinkingPicker(chatId: number, c: TgConfig): Promise<void> {
+		const rows = chunkRows(
+			THINKING_LEVELS.map((l) => ({ text: l, callback_data: `think:${l}` })),
+			2,
+		);
+		await sendMessage(c.botToken!, chatId, "Select a thinking level:", { inline_keyboard: rows });
+	}
+
+	async function handleModelCommand(c: TgConfig, chatId: number, args: string): Promise<void> {
+		if (args) {
+			const exact = tryFindModel(args);
+			if (exact) {
+				let ok = false;
+				try {
+					ok = await pi.setModel(exact);
+				} catch {
+					ok = false;
+				}
+				await safeSend(c.botToken!, chatId, ok ? `✅ Model set to ${modelLabel(exact)}` : `❌ Couldn't set model ${args}`);
+				return;
+			}
+		}
+		await showModelPicker(chatId, c, args);
+	}
+
+	async function handleThinkingCommand(c: TgConfig, chatId: number, args: string): Promise<void> {
+		if (args) {
+			const lvl = args.toLowerCase();
+			if (!THINKING_LEVELS.includes(lvl)) {
+				await safeSend(c.botToken!, chatId, `Unknown thinking level "${args}". Use: ${THINKING_LEVELS.join(", ")}`);
+				return;
+			}
+			try {
+				pi.setThinkingLevel(lvl as any);
+			} catch {
+				/* ignore */
+			}
+			await safeSend(c.botToken!, chatId, `✅ Thinking level set to ${lvl}.`);
+			return;
+		}
+		await showThinkingPicker(chatId, c);
+	}
+
+	// Handle inline-keyboard button taps (callback_query).
+	async function handleCallback(query: TgCallbackQuery): Promise<void> {
+		const c = ensure(sessionCtx);
+		const token = c.botToken;
+		if (!token) return;
+		const chatId = query.message?.chat?.id;
+		if (!chatId || !c.chats.some((x) => x.chatId === chatId)) {
+			await answerCallbackQuery(token, query.id, "Not linked to a pi session.");
+			return;
+		}
+		const data = query.data || "";
+		const messageId = query.message?.message_id;
+
+		if (data.startsWith("pick:")) {
+			const [, pid, idxStr] = data.split(":");
+			const st = pickers.get(pid);
+			const model = st?.models?.[Number(idxStr)];
+			if (!model) {
+				await answerCallbackQuery(token, query.id, "Picker expired. Send /model again.");
+				return;
+			}
+			await answerCallbackQuery(token, query.id, "Setting model…");
+			let ok = false;
+			try {
+				ok = await pi.setModel(model);
+			} catch {
+				ok = false;
+			}
+			if (messageId != null) {
+				await editMessageText(
+					token,
+					chatId,
+					messageId,
+					ok ? `✅ Model set to ${modelLabel(model)}` : `❌ Couldn't set model ${modelLabel(model)}`,
+					{ inline_keyboard: [] },
+				);
+			}
+			pickers.delete(pid);
+			return;
+		}
+
+		if (data.startsWith("pg:")) {
+			const [, pid, pageStr] = data.split(":");
+			const st = pickers.get(pid);
+			if (!st) {
+				await answerCallbackQuery(token, query.id, "Picker expired. Send /model again.");
+				return;
+			}
+			const page = Number(pageStr) || 0;
+			st.page = page;
+			const { text, keyboard } = renderModelPage(pid, st.models, page, st.pageSize);
+			await answerCallbackQuery(token, query.id);
+			if (messageId != null) {
+				await editMessageText(token, chatId, messageId, text, { inline_keyboard: keyboard });
+			}
+			return;
+		}
+
+		if (data.startsWith("think:")) {
+			const level = data.slice(6);
+			try {
+				pi.setThinkingLevel(level as any);
+			} catch {
+				/* ignore */
+			}
+			await answerCallbackQuery(token, query.id, `Thinking: ${level}`);
+			if (messageId != null) {
+				await editMessageText(token, chatId, messageId, `✅ Thinking level set to ${level}`, { inline_keyboard: [] });
+			}
+			return;
+		}
+
+		await answerCallbackQuery(token, query.id);
 	}
 
 	// ---- optional Telegram approval gate for dangerous commands ----

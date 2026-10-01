@@ -30,10 +30,29 @@ export interface TgMessage {
 	date: number;
 }
 
+export interface TgInlineButton {
+	text: string;
+	callback_data?: string;
+	url?: string;
+}
+
+export interface TgInlineKeyboard {
+	inline_keyboard: TgInlineButton[][];
+}
+
+export interface TgCallbackQuery {
+	id: string;
+	from?: TgUser;
+	message?: TgMessage;
+	chat_instance?: string;
+	data?: string;
+}
+
 export interface TgUpdate {
 	update_id: number;
 	message?: TgMessage;
 	edited_message?: TgMessage;
+	callback_query?: TgCallbackQuery;
 }
 
 // Overridable so tests (or a self-hosted local Bot API server) can point elsewhere.
@@ -74,21 +93,64 @@ export async function getUpdates(
 		{
 			offset,
 			timeout: timeoutSec,
-			allowed_updates: ["message", "edited_message"],
+			allowed_updates: ["message", "edited_message", "callback_query"],
 		},
 		(timeoutSec + 10) * 1000,
 	);
 }
 
 /** Send a text message, splitting on line boundaries if it exceeds the limit. */
-export async function sendMessage(token: string, chatId: number, text: string): Promise<void> {
+export async function sendMessage(
+	token: string,
+	chatId: number,
+	text: string,
+	replyMarkup?: TgInlineKeyboard,
+): Promise<void> {
 	const chunks = splitMessage(text || "(empty)", 4000);
-	for (const chunk of chunks) {
-		await tgCall(token, "sendMessage", {
+	for (let i = 0; i < chunks.length; i++) {
+		const params: Record<string, unknown> = {
 			chat_id: chatId,
-			text: chunk,
+			text: chunks[i],
 			disable_web_page_preview: true,
-		});
+		};
+		if (replyMarkup && i === 0) params.reply_markup = replyMarkup;
+		await tgCall(token, "sendMessage", params);
+	}
+}
+
+/** Acknowledge a button tap (stops the client-side spinner). */
+export async function answerCallbackQuery(
+	token: string,
+	callbackQueryId: string,
+	text?: string,
+): Promise<void> {
+	try {
+		const params: Record<string, unknown> = { callback_query_id: callbackQueryId };
+		if (text) params.text = text;
+		await tgCall(token, "answerCallbackQuery", params);
+	} catch {
+		/* ignore */
+	}
+}
+
+/** Edit a message's text (and optionally its inline keyboard). */
+export async function editMessageText(
+	token: string,
+	chatId: number,
+	messageId: number,
+	text: string,
+	replyMarkup?: TgInlineKeyboard,
+): Promise<void> {
+	try {
+		const params: Record<string, unknown> = {
+			chat_id: chatId,
+			message_id: messageId,
+			text,
+		};
+		if (replyMarkup) params.reply_markup = replyMarkup;
+		await tgCall(token, "editMessageText", params);
+	} catch {
+		/* ignore */
 	}
 }
 

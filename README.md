@@ -14,6 +14,8 @@ a risky command, it texts you a recap. Reply in Telegram to keep it going.
   `telegram-messaging` skill that is injected into context and enforced.
 - ⚡ **Slash commands work** — send any `/command` from Telegram and it runs in pi:
   extension commands, `/skill:name`, `/compact`, `/session`, and more.
+- 🎛️ **Remote pickers** — `/model` and `/thinking` open tappable Telegram inline
+  keyboards; tap to switch model or thinking level right from your phone.
 - 👥 **Multi-chat** — link several Telegram accounts/devices to one session.
 - 🖥️ **Multi-session** — run many pi sessions in tmux, each with its own bot and
   its own pings (labelled so you know which pane needs you).
@@ -144,14 +146,19 @@ the terminal:
 
 - **Extension commands, `/skill:name`, prompt templates** — dispatched and run
   as-is (e.g. `/handoff`, `/skill:pdf-tools`, your custom commands).
-- **Safe built-ins** — `/compact [instructions]`, `/name`, `/thinking`, `/session`,
-  and `/quit` run directly and reply with the result.
+- **Safe built-ins** — `/compact [instructions]`, `/name`, `/session`, and `/quit`
+  run directly and reply with the result.
+- **Remote pickers (tappable buttons)** — `/model` and `/thinking` open an inline
+  keyboard in the chat. `/model` pages through the available models (Next/Prev);
+  `/thinking` lists the levels. Just tap a button to apply it. You can also set
+  them directly: `/model <provider/id>` (or `/model <text>` to filter the list) and
+  `/thinking <level>`.
 - **Bridge commands** — `/pair`, `/unlink`, `/allow`, `/deny`, `/help` control the
   bridge itself and never reach pi.
-- **Terminal-only commands** — interactive pickers like `/model`, `/settings`,
-  `/login`, and session switches like `/new`, `/resume`, `/fork` reply with a short
-  note that they need the terminal (session switches would also detach Telegram),
-  so nothing is ever silently dropped.
+- **Terminal-only commands** — a few nested pickers (`/settings`, `/login`,
+  `/scoped-models`) and session switches (`/new`, `/resume`, `/fork`) reply with a
+  short note that they need the terminal (a switch would also detach Telegram), so
+  nothing is ever silently dropped.
 
 ---
 
