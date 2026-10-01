@@ -38,6 +38,9 @@ import type { TgConfig } from "./config.ts";
 import { getUpdates, sendMessage, tgCall, chatTitle } from "./telegram.ts";
 import type { TgUpdate, TgMessage } from "./telegram.ts";
 import { formatRecap } from "./recap.ts";
+import * as fs from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const DANGEROUS = [
 	/\brm\s+(-[a-z]*r[a-z]*f|--recursive)/i,
@@ -49,6 +52,25 @@ const DANGEROUS = [
 	/>\s*\/dev\/(sd|nvme|hd)/i,
 	/\bkill\s+-9\b/i,
 ];
+
+const baseDir = dirname(fileURLToPath(import.meta.url));
+const SKILL_PATH = join(baseDir, "skills", "telegram-messaging", "SKILL.md");
+
+let skillBodyCache: string | undefined;
+
+/** Load the messaging skill body (frontmatter stripped), cached. */
+function skillBody(): string {
+	if (skillBodyCache === undefined) {
+		let raw = "";
+		try {
+			raw = fs.readFileSync(SKILL_PATH, "utf8");
+		} catch {
+			raw = "";
+		}
+		skillBodyCache = raw.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/, "").trim();
+	}
+	return skillBodyCache;
+}
 
 function sleep(ms: number): Promise<void> {
 	return new Promise((r) => setTimeout(r, ms));
@@ -314,6 +336,25 @@ export default function (pi: ExtensionAPI) {
 		const allow = await requestApproval(c, cmd, ctx);
 		return allow ? undefined : { block: true, reason: "Denied via Telegram approval" };
 	});
+
+	// Force the messaging-style guide into the system prompt whenever this
+	// session is linked to Telegram, so replies stay readable in chat.
+	pi.on("before_agent_start", (event, ctx) => {
+		const c = ensure(ctx);
+		const opts = (event as any).systemPromptOptions;
+		if (!opts) return;
+		const sections = opts.sections || (opts.sections = {});
+		const linked = !!c.enabled && !!c.botToken && c.chats.length > 0;
+		const body = skillBody();
+		if (linked && body) {
+			sections.telegram_messaging = body;
+		} else {
+			delete sections.telegram_messaging;
+		}
+	});
+
+	// Register the messaging guide as a real, loadable skill.
+	pi.on("resources_discover", () => ({ skillPaths: [SKILL_PATH] }));
 
 	pi.on("session_shutdown", async () => {
 		stopPoller();

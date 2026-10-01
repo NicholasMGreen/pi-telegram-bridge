@@ -9,6 +9,9 @@ a risky command, it texts you a recap. Reply in Telegram to keep it going.
 
 - 💬 **Two-way chat** — type in Telegram, it's your message in the pi session; pi
   replies and pings you back.
+- 📱 **Chat-ready replies** — once linked, the agent writes for a phone: concise,
+  plain text, bullet points, no markdown. Driven by a built-in
+  `telegram-messaging` skill that is injected into context and enforced.
 - 👥 **Multi-chat** — link several Telegram accounts/devices to one session.
 - 🖥️ **Multi-session** — run many pi sessions in tmux, each with its own bot and
   its own pings (labelled so you know which pane needs you).
@@ -147,6 +150,10 @@ Each pane pings you separately. Label them so you know who's who:
   mid-run).
 - **Off by default:** the per-session `enabled` flag starts `false`;
   `/telegram setup` or `/telegram on` flips it.
+- **Messaging style:** as soon as a session is linked, the `telegram-messaging`
+  skill is forced into the system prompt so replies stay readable in chat — no
+  markdown, lead with the answer, short bullets, one question at a time. It is
+  also a normal skill (run `/skill:telegram-messaging` to load it any time).
 
 ### Files
 
