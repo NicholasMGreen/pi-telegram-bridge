@@ -189,7 +189,12 @@ pi install ./          # load it locally while hacking
 ```
 
 The extension is plain TypeScript under `extensions/telegram/`, loaded directly by
-pi (no build step). Contributions welcome.
+pi (no build step). It has **no runtime dependencies** — it uses only Node
+builtins and the global `fetch`. The single `@earendil-works/pi-coding-agent`
+import is **type-only** (erased at runtime and supplied by pi), and is declared
+as an *optional* peer dependency so installs pull zero packages. Install it
+locally (`npm i -D @earendil-works/pi-coding-agent`) only if you want editor
+IntelliSense. Contributions welcome.
 
 ## License
 
